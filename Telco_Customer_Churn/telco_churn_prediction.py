@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder, StandardScaler, RobustScaler
+from sklearn.impute import KNNImputer
 
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', 500)
@@ -131,3 +133,187 @@ def check_outlier(dataframe, col_name):
 for col in num_cols:
     print(col, check_outlier(df, col))
 
+
+scaler = StandardScaler()
+df[num_cols] = pd.DataFrame(scaler.fit_transform(df[num_cols]))
+df[num_cols].head()
+
+imputer = KNNImputer(n_neighbors=5)
+df[num_cols] = pd.DataFrame(imputer.fit_transform(df[num_cols]))
+
+
+def one_hot_encoder(dataframe, categorical_cols, drop_first=True):
+    dataframe = pd.get_dummies(dataframe, columns=categorical_cols, drop_first=drop_first)
+    return dataframe
+
+cat_cols_without_target = [col for col in cat_cols if col not in 'Churn']
+
+df = one_hot_encoder(df, cat_cols_without_target)
+
+
+check_df(df)
+
+
+import joblib
+import pandas as pd
+from lightgbm import LGBMClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier, AdaBoostClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import cross_validate, GridSearchCV, train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier
+from xgboost import XGBClassifier
+import warnings
+from sklearn.exceptions import ConvergenceWarning
+from catboost import CatBoostClassifier
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
+
+warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.simplefilter("ignore", category=ConvergenceWarning)
+
+def base_models(X, y, scoring="accuracy"):
+    print("Base Models....")
+    classifiers = [('LR', LogisticRegression()),
+                   ('KNN', KNeighborsClassifier()),
+                   ("SVC", SVC()),
+                   ("CART", DecisionTreeClassifier()),
+                   ("RF", RandomForestClassifier()),
+                   ('Adaboost', AdaBoostClassifier()),
+                   ('GBM', GradientBoostingClassifier()),
+                   ('XGBoost', XGBClassifier(use_label_encoder=False, eval_metric='logloss')),
+                   ('LightGBM', LGBMClassifier()),
+                   ('CatBoost', CatBoostClassifier(verbose=False))
+                   ]
+
+    for name, classifier in classifiers:
+        cv_results = cross_validate(classifier, X, y, cv=3, scoring=scoring)
+        print(f"{scoring}: {round(cv_results['test_score'].mean(), 4)} ({name}) ")
+
+# Hyperparameter Optimization
+
+# config.py
+
+# ElasticNet parameters
+elasticnet_params = {"alpha": [0.1, 1.0, 10.0],
+                     "l1_ratio": [0.1, 0.5, 0.9]}
+
+# K-Nearest Neighbors parameters
+knn_params = {"n_neighbors": range(2, 50)}
+
+# Decision Tree parameters
+cart_params = {'max_depth': range(1, 20),
+               "min_samples_split": range(2, 30)}
+
+# Random Forest parameters
+rf_params = {"max_depth": [8, 15, None],
+             "max_features": [5, 7, "sqrt"],
+             "min_samples_split": [15, 20],
+             "n_estimators": [200, 300]}
+
+# Support Vector parameters
+svc_params = {'kernel': ['linear', 'rbf'],
+              'C': [0.1, 1, 10],
+              'gamma': ['scale', 'auto']}
+
+# Gradient Boosting parameters
+gbm_params = {"learning_rate": [0.01, 0.1],
+              "n_estimators": [100, 200],
+              "max_depth": [3, 5, 7]}
+
+# XGBoost parameters
+xgboost_params = {"learning_rate": [0.1, 0.01],
+                  "max_depth": [5, 8],
+                  "n_estimators": [100, 200]}
+
+# LightGBM parameters
+lightgbm_params = {"learning_rate": [0.01, 0.1],
+                   "n_estimators": [300, 500]}
+
+# CatBoost parameters
+catboost_params = {"depth": [4, 6, 10],
+                   "learning_rate": [0.01, 0.1],
+                   "iterations": [100, 200]}
+
+classifiers = [
+    ('KNN', KNeighborsClassifier(), knn_params),
+    ("CART", DecisionTreeClassifier(), cart_params),
+    ("RF", RandomForestClassifier(), rf_params),
+    ('SVC', SVC(), svc_params),
+    ('GBM', GradientBoostingClassifier(), gbm_params),
+    ('XGBoost', XGBClassifier(use_label_encoder=False, eval_metric='logloss'), xgboost_params),
+    ('LightGBM', LGBMClassifier(), lightgbm_params),
+    ("CatBoost", CatBoostClassifier(verbose=False), catboost_params)
+]
+
+def hyperparameter_optimization(X, y, cv=3, scoring="accuracy"):
+    print("Hyperparameter Optimization....")
+    best_models = {}
+    for name, classifier, params in classifiers:
+        print(f"########## {name} ##########")
+        cv_results = cross_validate(classifier, X, y, cv=cv, scoring=scoring)
+        print(f"{scoring} (Before): {round(cv_results['test_score'].mean(), 4)}")
+
+        gs_best = GridSearchCV(classifier, params, cv=cv, n_jobs=-1, verbose=False).fit(X, y)
+        final_model = classifier.set_params(**gs_best.best_params_)
+
+        cv_results = cross_validate(final_model, X, y, cv=cv, scoring=scoring)
+        print(f"{scoring} (After): {round(cv_results['test_score'].mean(), 4)}")
+        print(f"{name} best params: {gs_best.best_params_}", end="\n\n")
+        best_models[name] = final_model
+    return best_models
+
+# Stacking & Ensemble Learning
+def voting_classifier(best_models, X, y):
+    print("Voting Classifier...")
+    voting_clf = VotingClassifier(estimators=[('CatBoost', best_models["CatBoost"]),
+                                              ('GBM', best_models["GBM"]),
+                                              ('XGBoost', best_models["XGBoost"]),
+                                              ('RF', best_models["RF"]),
+                                              ('LightGBM', best_models["LightGBM"]),
+                                              ],
+                                  voting='soft').fit(X, y)
+    cv_results = cross_validate(voting_clf, X, y, cv=3, scoring=["accuracy", "f1", "roc_auc"])
+    print(f"Accuracy: {cv_results['test_accuracy'].mean()}")
+    print(f"F1Score: {cv_results['test_f1'].mean()}")
+    print(f"ROC_AUC: {cv_results['test_roc_auc'].mean()}")
+    return voting_clf
+
+X = df.drop(['Churn', 'customerID'], axis=1)
+y = df['Churn']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20, random_state=9)
+
+base_models(X_train, y_train)
+best_models = hyperparameter_optimization(X_train, y_train)
+voting_clf = voting_classifier(best_models, X_train, y_train)
+predictions = voting_clf.predict(X_test)
+
+accuracy = accuracy_score(y_test, predictions)
+conf_matrix = confusion_matrix(y_test, predictions)
+f1 = f1_score(y_test, predictions, average='weighted')
+precision = precision_score(y_test, predictions, average='weighted')
+recall = recall_score(y_test, predictions, average='weighted')
+
+print(f"Accuracy: {accuracy}")
+print(f"Confusion Matrix:\n{conf_matrix}")
+print(f"F1 Score: {f1}")
+print(f"Precision: {precision}")
+print(f"Recall: {recall}")
+
+# ROC AUC (sadece ikili sınıflandırma için geçerli)
+if hasattr(voting_clf, "predict_proba"):
+    probabilities = voting_clf.predict_proba(X_test)
+    roc_auc = roc_auc_score(y_test, probabilities[:, 1])
+    print(f"ROC AUC Score: {roc_auc}")
+
+#dictionary = {"Id":test_prep.index, "Degerlendirme Puani":predictions}
+#dfSubmission = pd.DataFrame(dictionary)
+
+#dfSubmission['SalePrice'] = pd.DataFrame(scaler.inverse_transform(dfSubmission['SalePrice']))
+#dfSubmission['SalePrice'] = np.exp(dfSubmission['SalePrice'])
+    
+#dfSubmission.to_csv("predictions.csv", index=False)
+
+joblib.dump(voting_clf, "voting_clf.pkl")
